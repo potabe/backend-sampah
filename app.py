@@ -1,99 +1,81 @@
 import os
 import numpy as np
 from flask import Flask, request, jsonify
+from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing import image
-from tensorflow.keras.applications import MobileNetV2
-from tensorflow.keras import layers, models
 from PIL import Image
 
 app = Flask(__name__)
 
-# --- KONFIGURASI ---
-WEIGHTS_FILENAME = 'hanya_bobot.weights.h5'  # Pastikan nama file sesuai
+# Nama file model baru
+MODEL_FILE = 'model_mobilenet_auto.h5'
 model = None
 
-# --- FUNGSI MEMBANGUN MODEL ---
-# Kita copy-paste arsitektur persis seperti di Colab
-def build_model():
-    print("Membangun arsitektur MobileNetV2...")
-    
-    # 1. Base Model (MobileNetV2)
-    base_model = MobileNetV2(input_shape=(160, 160, 3),
-                             include_top=False,
-                             weights=None) # Kita set None karena akan load dari file lokal
-    
-    # 2. Susun Layer (Harus SAMA PERSIS dengan Colab)
-    new_model = models.Sequential([
-        base_model,
-        layers.GlobalAveragePooling2D(),
-        layers.Dropout(0.2),
-        layers.Dense(128, activation='relu'),
-        # Pastikan jumlah unit output SAMA dengan jumlah kelas (biasanya 6)
-        layers.Dense(6, activation='softmax') 
-    ])
-    
-    return new_model
-
-# --- LOAD MODEL SAAT STARTUP ---
-print("="*50)
-if os.path.exists(WEIGHTS_FILENAME):
+# Load Model saat Start
+if os.path.exists(MODEL_FILE):
     try:
-        # 1. Bangun kerangkanya dulu
-        model = build_model()
-        
-        # 2. Isi dengan bobot dari Colab
-        print(f"Memuat bobot dari {WEIGHTS_FILENAME}...")
-        model.load_weights(WEIGHTS_FILENAME)
-        
-        print("✅ SUKSES: Model siap digunakan!")
+        print("Memuat model...")
+        model = load_model(MODEL_FILE, compile=False)
+        print("✅ Model Berhasil Dimuat!")
     except Exception as e:
-        print(f"❌ ERROR: Gagal memuat bobot. Pesan error: {e}")
-        model = None
+        print(f"❌ Error Load Model: {e}")
 else:
-    print(f"❌ ERROR FATAL: File '{WEIGHTS_FILENAME}' tidak ditemukan!")
-print("="*50)
+    print("❌ File model tidak ditemukan!")
 
-# Daftar Label
+# Label (Sesuaikan urutan abjad folder dataset Anda)
 class_names = ['cardboard', 'glass', 'metal', 'paper', 'plastic', 'trash']
 
 def prepare_image(img):
-    img = img.resize((160, 160))
-    img_array = image.img_to_array(img)
-    img_array = img_array / 255.0
-    img_array = np.expand_dims(img_array, axis=0)
-    return img_array
+    # 1. Pastikan RGB
+    if img.mode != "RGB":
+        img = img.convert("RGB")
+    
+    # 2. Resize harus SAMA PERSIS dengan Training (224x224)
+    img = img.resize((224, 224))
+    
+    # 3. Ubah ke Array
+    x = image.img_to_array(img)
+    
+    # 4. Normalisasi harus SAMA PERSIS dengan Training (1/255)
+    x = x / 255.0
+    
+    # 5. Tambah dimensi batch
+    x = np.expand_dims(x, axis=0)
+    return x
+
+@app.route('/', methods=['GET'])
+def index():
+    return "Server Reset OK"
 
 @app.route('/predict', methods=['POST'])
 def predict():
-    if model is None:
-        return jsonify({'error': 'Model belum siap'}), 500
-
+    if not model:
+        return jsonify({'error': 'Model rusak/hilang'}), 500
+    
     if 'file' not in request.files:
-        return jsonify({'error': 'Tidak ada file'}), 400
-    
-    file = request.files['file']
-    
+        return jsonify({'error': 'No file'}), 400
+
     try:
+        file = request.files['file']
         img = Image.open(file.stream)
+        
+        # Proses
         processed_img = prepare_image(img)
-        
         prediction = model.predict(processed_img)
-        index_max = np.argmax(prediction)
         
-        label_result = class_names[index_max]
-        confidence = float(prediction[0][index_max]) * 100
+        # Ambil hasil
+        idx = np.argmax(prediction)
+        label = class_names[idx]
+        confidence = float(prediction[0][idx]) * 100
         
-        return jsonify({
-            'label': label_result,
-            'confidence': f"{confidence:.2f}%",
-            'message': 'Klasifikasi berhasil'
-        })
+        # Debugging di Log
+        print(f"Prediksi: {label} - {confidence}%")
+        print(f"Raw: {prediction}")
+
+        return jsonify({'label': label, 'confidence': f"{confidence:.2f}%"})
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
-    # Cloud akan memberi PORT lewat environment variable
-    # Jika tidak ada (di laptop), default ke 5000
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=7860)
